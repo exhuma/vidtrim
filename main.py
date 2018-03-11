@@ -45,11 +45,12 @@ class SwitchDetector:
     def __call__(self, frames, regions):
         frame_has_motion = bool(regions)
         # Give the motion detector some time to settle
+        progress = (self.position/self.total_frames*100)
         LOG.debug('Frame #%-6d/%-10d has motion: %5s (%3.2f%%)',
                   self.position,
                   self.total_frames,
                   bool(regions),
-                  (self.position/self.total_frames*100))
+                  progress)
 
         if frame_has_motion:
             if self.current_state == 'still':
@@ -59,6 +60,7 @@ class SwitchDetector:
             if self.current_state == 'motion':
                 self.current_state = 'still'
                 self.segments[-1].end = self.position
+                LOG.info('Added segment: %r (%.2f%%)', self.segments[-1], progress)
         self.position += 1
         return MutatorOutput([], regions)
 
@@ -90,7 +92,7 @@ def detect_segments(threshold=100):
     switch_detector = SwitchDetector(frame_source)
     app = Application()
     app.init_scripted(frame_source.frame_generator(),
-                      debug=True, verbosity=5,
+                      debug=True, verbosity=3,
                       custom_pipeline=MyPipeline(switch_detector))
     logging.getLogger('raspicam.operations').setLevel(logging.ERROR)
     app.run()
