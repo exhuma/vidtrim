@@ -184,6 +184,7 @@ def join(origin_file, segments):
         'ffmpeg',
         '-loglevel', 'warning',
         '-f', 'concat',
+        '-safe', '0',
         '-i', segments_file,
         '-c', 'copy',
         '-y',
