@@ -38,7 +38,7 @@ class SwitchDetector:
 
     def __init__(self, source):
         self.position = 0
-        self.current_state = None
+        self.current_state = 'motion'
         self.segments = [MotionSegment(start=0)]
         self.total_frames = source.total_frames
 
@@ -50,10 +50,6 @@ class SwitchDetector:
                   self.total_frames,
                   bool(regions),
                   (self.position/self.total_frames*100))
-        if self.position < 20:
-            self.current_state = 'motion' if frame_has_motion else 'still'
-            self.position += 1
-            return MutatorOutput([], regions)
 
         if frame_has_motion:
             if self.current_state == 'still':
@@ -86,7 +82,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
+def detect_segments(threshold=100):
 
     args = parse_args()
     frame_source = FileReader(args.filename)
@@ -105,22 +101,24 @@ def main():
 
     merged_segments = [switch_detector.segments[0]]
     for segment in switch_detector.segments[1:]:
-        if merged_segments[-1].end is None:
-            # we reached the end
-            merged_segments[-1].end = switch_detector.position
-        if segment.start - merged_segments[-1].end <= 100:
+        if segment.start - merged_segments[-1].end <= threshold:
             merged_segments[-1].end = segment.end
             continue
         else:
             merged_segments.append(segment)
+    if merged_segments[-1].end is None:
+        # we reached the end
+        LOG.info('Open-ended segment. Setting to max frame number (%s)',
+                 switch_detector.position)
+        merged_segments[-1].end = switch_detector.position
     LOG.info('%d motion segments remained after merging.', len(merged_segments))
     return filename, merged_segments, fps
 
 
-def create_keyframes(filename, merged_segments, fps):
+def create_keyframes(filename, segments, fps):
     keyframes = []
     basename, _, ext = filename.rpartition('.')
-    for segment in merged_segments:
+    for segment in segments:
         keyframes.append(str(segment.start // fps))
         keyframes.append(str(segment.end // fps))
     args = ','.join(keyframes)
@@ -141,8 +139,8 @@ def create_keyframes(filename, merged_segments, fps):
     return keyed_filename
 
 
-def extract_segments(input_file):
-    for segment in merged_segments:
+def extract_segments(input_file, segments, fps):
+    for segment in segments:
         LOG.info('Extracting %s', segment)
         basename, _, ext = input_file.rpartition('.')
         start = segment.start // fps
@@ -198,12 +196,20 @@ def join(origin_file, segments):
     return joined_filename
 
 
-if __name__ == '__main__':
+def main():
     logging.basicConfig(level=0)
-    filename, merged_segments, fps = main()
-    keyed_filename = create_keyframes(filename, merged_segments, fps)
-    segments = extract_segments(keyed_filename)
-    joined_filename = join(filename, segments)
-    unlink(keyed_filename)
-    move(filename, filename + '.bak')
-    move(joined_filename, filename)
+    filename, merged_segments, fps = detect_segments()
+    if len(merged_segments) == 1:
+        LOG.info('Nothing to extract')
+    else:
+        LOG.info('Extracting %d segments', len(merged_segments))
+        keyed_filename = create_keyframes(filename, merged_segments, fps)
+        segments = extract_segments(keyed_filename, merged_segments, fps)
+        joined_filename = join(filename, segments)
+        unlink(keyed_filename)
+        move(filename, filename + '.bak')
+        move(joined_filename, filename)
+
+
+if __name__ == '__main__':
+    main()
