@@ -36,15 +36,20 @@ class MotionSegment:
 
 class SwitchDetector:
 
-    def __init__(self):
+    def __init__(self, source):
         self.position = 0
         self.current_state = None
         self.segments = [MotionSegment(start=0)]
+        self.total_frames = source.total_frames
 
     def __call__(self, frames, regions):
         frame_has_motion = bool(regions)
         # Give the motion detector some time to settle
-        LOG.debug('Frame #%-6d has motion: %s', self.position, bool(regions))
+        LOG.debug('Frame #%-6d/%-10d has motion: %5s (%3.2f%%)',
+                  self.position,
+                  self.total_frames,
+                  bool(regions),
+                  (self.position/self.total_frames*100))
         if self.position < 20:
             self.current_state = 'motion' if frame_has_motion else 'still'
             self.position += 1
@@ -83,13 +88,15 @@ def parse_args():
 
 def main():
 
-    switch_detector = SwitchDetector()
-    app = Application()
     args = parse_args()
     frame_source = FileReader(args.filename)
+    frame_source.init()
+    switch_detector = SwitchDetector(frame_source)
+    app = Application()
     app.init_scripted(frame_source.frame_generator(),
-                      debug=True, verbosity=3,
+                      debug=True, verbosity=5,
                       custom_pipeline=MyPipeline(switch_detector))
+    logging.getLogger('raspicam.operations').setLevel(logging.ERROR)
     app.run()
     fps = frame_source.source.get(cv2.CAP_PROP_FPS)
     filename = args.filename
