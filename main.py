@@ -1,5 +1,6 @@
 from raspicam.main import Application
 from shutil import move
+from os.path import basename
 from os import unlink
 import logging
 from subprocess import check_call
@@ -41,12 +42,14 @@ class SwitchDetector:
         self.current_state = 'motion'
         self.segments = [MotionSegment(start=0)]
         self.total_frames = source.total_frames
+        self.basename = basename(source.filename)
 
     def __call__(self, frames, regions):
         frame_has_motion = bool(regions)
         # Give the motion detector some time to settle
         progress = (self.position/self.total_frames*100)
-        LOG.debug('Frame #%-6d/%-10d has motion: %5s (%3.2f%%)',
+        LOG.debug('%s | Frame #%-6d/%-10d has motion: %5s (%3.2f%%)',
+                  self.basename,
                   self.position,
                   self.total_frames,
                   bool(regions),
@@ -60,7 +63,8 @@ class SwitchDetector:
             if self.current_state == 'motion':
                 self.current_state = 'still'
                 self.segments[-1].end = self.position
-                LOG.info('Added segment: %r (%.2f%%)', self.segments[-1], progress)
+                LOG.info('%s | Added segment: %r (%.2f%%)',
+                  self.basename, self.segments[-1], progress)
         self.position += 1
         return MutatorOutput([], regions)
 
