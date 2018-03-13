@@ -1,5 +1,6 @@
+import concurrent.futures
 import logging
-from os import rmdir, unlink
+from os import unlink
 from os.path import basename, exists
 from os.path import join as pjoin
 from shutil import move
@@ -71,7 +72,7 @@ class MyPipeline(DetectionPipeline):
 def parse_args():
     from argparse import ArgumentParser
     parser = ArgumentParser()
-    parser.add_argument('filename')
+    parser.add_argument('filenames', nargs='+')
     parser.add_argument('-n', '--no-backup', dest='backup', default=True,
                         action='store_false',
                         help='Do not keep a .bak file of the modified video.')
@@ -215,6 +216,7 @@ def process(filename, destination, workdir, do_cleanup, do_backup):
     switch_detector = SwitchDetector(filename, None)
     pipeline = MyPipeline(switch_detector)
     LOG.info('Processing %s', filename)
+    file_basename = basename(filename)
 
     generator, total, fps = frame_generator(filename)
     for pos, frame in generator():
@@ -233,6 +235,10 @@ def process(filename, destination, workdir, do_cleanup, do_backup):
 
     if len(merged_segments) == 1:
         LOG.info('Only 1 segment remains: Nothing to extract')
+        if destination:
+            final_destination = pjoin(destination, file_basename)
+            LOG.info('Moving to %s', final_destination)
+            move(filename, final_destination)
     else:
         LOG.info('Extracting %d segments', len(merged_segments))
         keyed_filename = create_keyframes(
@@ -256,21 +262,30 @@ def process(filename, destination, workdir, do_cleanup, do_backup):
             move(filename, backup_filename)
         move(joined_filename, filename)
         if destination:
-            final_destination = pjoin(destination, filename)
+            final_destination = pjoin(destination, file_basename)
             LOG.info('Moving to %s', final_destination)
             move(filename, final_destination)
 
 
 def main():
-    logging.basicConfig(level=0)
+    logging.basicConfig(level=logging.INFO)
     args = parse_args()
 
     if args.workdir and not exists(args.workdir):
         LOG.error('Workdir %s is missing!', args.workdir)
         return 1
 
-    process(args.filename, args.destination, args.workdir, args.cleanup,
-            args.backup)
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = []
+        for filename in args.filenames:
+            futures.append(executor.submit(
+                process, filename, args.destination, args.workdir,
+                args.cleanup, args.backup))
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                print(future.result())
+            except Exception as exc:
+                print('%s generated an exception: %s' % (future, exc))
 
 
 if __name__ == '__main__':
