@@ -40,12 +40,6 @@ class SwitchDetector:
         frame_has_motion = bool(regions)
         # Give the motion detector some time to settle
         progress = (self.position/self.total_frames*100)
-        LOG.debug('%s | Frame #%-6d/%-10d has motion: %5s (%3.2f%%)',
-                  self.basename,
-                  self.position,
-                  self.total_frames,
-                  bool(regions),
-                  progress)
 
         if frame_has_motion:
             if self.current_state == 'still':
