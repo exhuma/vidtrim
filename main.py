@@ -88,6 +88,9 @@ def parse_args():
                         help='Do not keep a .bak file of the modified video.')
     parser.add_argument('-d', '--destination', default='',
                         help='Destination folder of the modified video')
+    parser.add_argument('-C', '--no-cleanup', dest='cleanup', default=True,
+                        action='store_false',
+                        help='Do not remove temporary files.')
     return parser.parse_args()
 
 
@@ -162,7 +165,7 @@ def extract_segments(input_file, segments, fps):
         yield outfile
 
 
-def join(origin_file, segments):
+def join(origin_file, segments, cleanup=True):
     filenames = list(segments)
     segments_file = 'segments.list'
     with open(segments_file, 'w') as fptr:
@@ -184,9 +187,10 @@ def join(origin_file, segments):
     LOG.debug('Running %r', ' '.join(cmd))
     check_call(cmd)
 
-    for filename in filenames:
-        unlink(filename)
-    unlink(segments_file)
+    if cleanup:
+        for filename in filenames:
+            do_cleanup(filename)
+        do_cleanup(segments_file)
     return joined_filename
 
 
@@ -211,9 +215,15 @@ def frame_generator(filename):
     return frames, total_frames, fps
 
 
+def do_cleanup(filename):
+    LOG.debug('Cleaning up %r', filename)
+    unlink(filename)
+
+
 def main():
     logging.basicConfig(level=0)
     args = parse_args()
+
     switch_detector = SwitchDetector(args.filename, None)
     pipeline = MyPipeline(switch_detector)
     LOG.info('Processing %s', args.filename)
@@ -239,8 +249,9 @@ def main():
         LOG.info('Extracting %d segments', len(merged_segments))
         keyed_filename = create_keyframes(args.filename, merged_segments, fps)
         segments = extract_segments(keyed_filename, merged_segments, fps)
-        joined_filename = join(args.filename, segments)
-        unlink(keyed_filename)
+        joined_filename = join(args.filename, segments, cleanup=args.cleanup)
+        if args.cleanup:
+            do_cleanup(keyed_filename)
         if args.backup:
             backup_filename = args.filename + '.bak'
             LOG.info('Backing up original file as %s', backup_filename)
