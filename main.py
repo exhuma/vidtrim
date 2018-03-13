@@ -1,20 +1,14 @@
-from shutil import move
-from os.path import basename, join as pjoin
-from os import unlink
 import logging
+from os import unlink
+from os.path import basename
+from os.path import join as pjoin
+from shutil import move
 from subprocess import check_call
-from raspicam.pipeline import (
-    DetectionPipeline,
-    resizer,
-    togray,
-    blur,
-    MutatorOutput,
-    MotionDetector,
-)
-from raspicam.localtypes import Dimension
 
 import cv2
-
+from raspicam.localtypes import Dimension
+from raspicam.pipeline import (DetectionPipeline, MotionDetector,
+                               MutatorOutput, blur, resizer, togray)
 
 LOG = logging.getLogger(__name__)
 
