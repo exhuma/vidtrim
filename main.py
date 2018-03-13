@@ -1,4 +1,3 @@
-from raspicam.main import Application
 from shutil import move
 from os.path import basename
 from os import unlink
@@ -13,7 +12,6 @@ from raspicam.pipeline import (
     MotionDetector,
 )
 from raspicam.localtypes import Dimension
-from raspicam.source import FileReader
 
 import cv2
 
@@ -37,12 +35,12 @@ class MotionSegment:
 
 class SwitchDetector:
 
-    def __init__(self, source):
+    def __init__(self, filename, total_frames):
         self.position = 0
         self.current_state = 'motion'
         self.segments = [MotionSegment(start=0)]
-        self.total_frames = source.total_frames
-        self.basename = basename(source.filename)
+        self.total_frames = total_frames
+        self.basename = basename(filename)
 
     def __call__(self, frames, regions):
         frame_has_motion = bool(regions)
@@ -64,7 +62,7 @@ class SwitchDetector:
                 self.current_state = 'still'
                 self.segments[-1].end = self.position
                 LOG.info('%s | Added segment: %r (%.2f%%)',
-                  self.basename, self.segments[-1], progress)
+                         self.basename, self.segments[-1], progress)
         self.position += 1
         return MutatorOutput([], regions)
 
@@ -88,26 +86,11 @@ def parse_args():
     return parser.parse_args()
 
 
-def detect_segments(threshold=100):
-
-    args = parse_args()
-    frame_source = FileReader(args.filename)
-    frame_source.init()
-    switch_detector = SwitchDetector(frame_source)
-    app = Application()
-    app.init_scripted(frame_source.frame_generator(),
-                      debug=True, verbosity=3,
-                      custom_pipeline=MyPipeline(switch_detector))
-    logging.getLogger('raspicam.operations').setLevel(logging.ERROR)
-    app.run()
-    fps = frame_source.source.get(cv2.CAP_PROP_FPS)
-    filename = args.filename
-
-    LOG.info('%d motion segments found', len(switch_detector.segments))
-
-    merged_segments = [switch_detector.segments[0]]
-    for segment in switch_detector.segments[1:]:
+def merge_segments(segments, end_position, threshold):
+    merged_segments = [segments[0]]
+    for segment in segments[1:]:
         if segment.start - merged_segments[-1].end <= threshold:
+            LOG.debug('Merging %s with %s', merged_segments[-1], segment)
             merged_segments[-1].end = segment.end
             continue
         else:
@@ -115,10 +98,9 @@ def detect_segments(threshold=100):
     if merged_segments[-1].end is None:
         # we reached the end
         LOG.info('Open-ended segment. Setting to max frame number (%s)',
-                 switch_detector.position)
-        merged_segments[-1].end = switch_detector.position
-    LOG.info('%d motion segments remained after merging.', len(merged_segments))
-    return filename, merged_segments, fps
+                 end_position)
+        merged_segments[-1].end = end_position
+    return merged_segments
 
 
 def create_keyframes(filename, segments, fps):
@@ -203,19 +185,59 @@ def join(origin_file, segments):
     return joined_filename
 
 
+def frame_generator(filename):
+
+    source = cv2.VideoCapture(filename)
+    total_frames = source.get(cv2.CAP_PROP_FRAME_COUNT)
+    fps = source.get(cv2.CAP_PROP_FPS)
+    if not source.isOpened():
+        raise Exception('Unable to open %s' % filename)
+
+    def frames():
+        while True:
+            next_frame = source.get(cv2.CAP_PROP_POS_FRAMES)
+            success, image = source.read()
+            if not success:
+                LOG.info('Unable to read frame from %s. Might have reached '
+                         'end of file!', filename)
+                return
+            yield next_frame, image
+
+    return frames, total_frames, fps
+
+
 def main():
     logging.basicConfig(level=0)
-    filename, merged_segments, fps = detect_segments()
+    args = parse_args()
+    switch_detector = SwitchDetector(args.filename, None)
+    pipeline = MyPipeline(switch_detector)
+    LOG.info('Processing %s', args.filename)
+
+    generator, total, fps = frame_generator(args.filename)
+    for pos, frame in generator():
+        LOG.debug('Processing frame %d/%d %3.2f%%' % (
+            pos, total, (pos/total)*100))
+        switch_detector.total_frames = total
+        pipeline.feed(frame)
+
+    inter_frame_threshold = 100
+    LOG.info('Merging segments which are closer than %d frames',
+             inter_frame_threshold)
+    merged_segments = merge_segments(
+        switch_detector.segments,
+        switch_detector.position,
+        inter_frame_threshold)
+
     if len(merged_segments) == 1:
-        LOG.info('Nothing to extract')
+        LOG.info('Only 1 segment remains: Nothing to extract')
     else:
         LOG.info('Extracting %d segments', len(merged_segments))
-        keyed_filename = create_keyframes(filename, merged_segments, fps)
+        keyed_filename = create_keyframes(args.filename, merged_segments, fps)
         segments = extract_segments(keyed_filename, merged_segments, fps)
-        joined_filename = join(filename, segments)
+        joined_filename = join(args.filename, segments)
         unlink(keyed_filename)
-        move(filename, filename + '.bak')
-        move(joined_filename, filename)
+        move(args.filename, args.filename + '.bak')
+        move(joined_filename, args.filename)
 
 
 if __name__ == '__main__':
