@@ -4,6 +4,7 @@ from os.path import basename
 from os.path import join as pjoin
 from shutil import move
 from subprocess import check_call
+from tempfile import mkstemp
 
 import cv2
 from raspicam.localtypes import Dimension
@@ -106,10 +107,7 @@ def create_keyframes(filename, segments, fps):
         keyframes.append(str(segment.start // fps))
         keyframes.append(str(segment.end // fps))
     args = ','.join(keyframes)
-    keyed_filename = '{basename}-keyframes.{ext}'.format(
-        basename=basename,
-        ext=ext
-    )
+    _, keyed_filename = mkstemp(prefix=basename, suffix='-keyframes.%s' % ext)
     cmd = [
         'ffmpeg',
         '-loglevel', 'warning',
@@ -128,11 +126,8 @@ def extract_segments(input_file, segments, fps):
         LOG.info('Extracting %s', segment)
         basename, _, ext = input_file.rpartition('.')
         start = segment.start // fps
-        outfile = '{basename}-strip-{start}.{ext}'.format(
-            start=start,
-            basename=basename,
-            ext=ext
-        )
+        _, outfile = mkstemp(prefix=basename,
+                             suffix='-strip-%s.%s' % (start, ext))
         cmd = [
             'ffmpeg',
             '-loglevel', 'warning',
@@ -155,13 +150,14 @@ def extract_segments(input_file, segments, fps):
 
 def join(origin_file, segments, cleanup=True):
     filenames = list(segments)
-    segments_file = 'segments.list'
+    basename, _, ext = origin_file.rpartition('.')
+    _, segments_file = mkstemp(prefix=basename, suffix='-segments.list')
     with open(segments_file, 'w') as fptr:
         fptr.writelines("file '%s'\n" % line for line in filenames)
 
-    basename, _, ext = origin_file.rpartition('.')
-    joined_filename = '%s-onlymotion.%s' % (basename, ext)
-
+    _, joined_filename = mkstemp(
+        prefix=basename,
+        suffix='-onlymotion.%s' % ext)
     cmd = [
         'ffmpeg',
         '-loglevel', 'warning',
