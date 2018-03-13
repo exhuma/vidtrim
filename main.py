@@ -152,7 +152,7 @@ def extract_segments(input_file, segments, fps, workdir=None):
         yield outfile
 
 
-def join(origin_file, segments, cleanup=True, workdir=None):
+def join(origin_file, segments, do_cleanup=True, workdir=None):
     filenames = list(segments)
     basename, _, ext = origin_file.rpartition('.')
     _, segments_file = mkstemp(prefix=basename, suffix='-segments.list',
@@ -178,10 +178,10 @@ def join(origin_file, segments, cleanup=True, workdir=None):
     LOG.debug('Running %r', ' '.join(cmd))
     check_call(cmd)
 
-    if cleanup:
+    if do_cleanup:
         for filename in filenames:
-            do_cleanup(filename)
-        do_cleanup(segments_file)
+            remove(filename)
+        remove(segments_file)
     return joined_filename
 
 
@@ -206,24 +206,17 @@ def frame_generator(filename):
     return frames, total_frames, fps
 
 
-def do_cleanup(filename):
+def remove(filename):
     LOG.debug('Cleaning up %r', filename)
     unlink(filename)
 
 
-def main():
-    logging.basicConfig(level=0)
-    args = parse_args()
-
-    if args.workdir and not exists(args.workdir):
-        LOG.error('Workdir %s is missing!', args.workdir)
-        return 1
-
-    switch_detector = SwitchDetector(args.filename, None)
+def process(filename, destination, workdir, do_cleanup, do_backup):
+    switch_detector = SwitchDetector(filename, None)
     pipeline = MyPipeline(switch_detector)
-    LOG.info('Processing %s', args.filename)
+    LOG.info('Processing %s', filename)
 
-    generator, total, fps = frame_generator(args.filename)
+    generator, total, fps = frame_generator(filename)
     for pos, frame in generator():
         LOG.debug('Processing frame %d/%d %3.2f%%' % (
             pos, total, (pos/total)*100))
@@ -243,29 +236,41 @@ def main():
     else:
         LOG.info('Extracting %d segments', len(merged_segments))
         keyed_filename = create_keyframes(
-            args.filename, merged_segments, fps, workdir=args.workdir)
+            filename, merged_segments, fps, workdir=workdir)
         segments = extract_segments(
             keyed_filename,
             merged_segments,
             fps,
-            workdir=args.workdir
+            workdir=workdir
         )
         joined_filename = join(
-            args.filename,
+            filename,
             segments,
-            cleanup=args.cleanup,
-            workdir=args.workdir)
-        if args.cleanup:
-            do_cleanup(keyed_filename)
-        if args.backup:
-            backup_filename = args.filename + '.bak'
+            do_cleanup=do_cleanup,
+            workdir=workdir)
+        if do_cleanup:
+            remove(keyed_filename)
+        if do_backup:
+            backup_filename = filename + '.bak'
             LOG.info('Backing up original file as %s', backup_filename)
-            move(args.filename, backup_filename)
-        move(joined_filename, args.filename)
-        if args.destination:
-            final_destination = pjoin(args.destination, args.filename)
+            move(filename, backup_filename)
+        move(joined_filename, filename)
+        if destination:
+            final_destination = pjoin(destination, filename)
             LOG.info('Moving to %s', final_destination)
-            move(args.filename, final_destination)
+            move(filename, final_destination)
+
+
+def main():
+    logging.basicConfig(level=0)
+    args = parse_args()
+
+    if args.workdir and not exists(args.workdir):
+        LOG.error('Workdir %s is missing!', args.workdir)
+        return 1
+
+    process(args.filename, args.destination, args.workdir, args.cleanup,
+            args.backup)
 
 
 if __name__ == '__main__':
