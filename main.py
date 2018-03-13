@@ -1,6 +1,6 @@
 import logging
-from os import unlink
-from os.path import basename
+from os import rmdir, unlink
+from os.path import basename, exists
 from os.path import join as pjoin
 from shutil import move
 from subprocess import check_call
@@ -80,6 +80,8 @@ def parse_args():
     parser.add_argument('-C', '--no-cleanup', dest='cleanup', default=True,
                         action='store_false',
                         help='Do not remove temporary files.')
+    parser.add_argument('-w', '--work-dir', dest='workdir', default=None,
+                        help='Folder to store temporary files.')
     return parser.parse_args()
 
 
@@ -100,14 +102,15 @@ def merge_segments(segments, end_position, threshold):
     return merged_segments
 
 
-def create_keyframes(filename, segments, fps):
+def create_keyframes(filename, segments, fps, workdir=None):
     keyframes = []
     basename, _, ext = filename.rpartition('.')
     for segment in segments:
         keyframes.append(str(segment.start // fps))
         keyframes.append(str(segment.end // fps))
     args = ','.join(keyframes)
-    _, keyed_filename = mkstemp(prefix=basename, suffix='-keyframes.%s' % ext)
+    _, keyed_filename = mkstemp(prefix=basename, suffix='-keyframes.%s' % ext,
+                                dir=workdir)
     cmd = [
         'ffmpeg',
         '-loglevel', 'warning',
@@ -121,13 +124,14 @@ def create_keyframes(filename, segments, fps):
     return keyed_filename
 
 
-def extract_segments(input_file, segments, fps):
+def extract_segments(input_file, segments, fps, workdir=None):
     for segment in segments:
         LOG.info('Extracting %s', segment)
         basename, _, ext = input_file.rpartition('.')
         start = segment.start // fps
         _, outfile = mkstemp(prefix=basename,
-                             suffix='-strip-%s.%s' % (start, ext))
+                             suffix='-strip-%s.%s' % (start, ext),
+                             dir=workdir)
         cmd = [
             'ffmpeg',
             '-loglevel', 'warning',
@@ -148,16 +152,19 @@ def extract_segments(input_file, segments, fps):
         yield outfile
 
 
-def join(origin_file, segments, cleanup=True):
+def join(origin_file, segments, cleanup=True, workdir=None):
     filenames = list(segments)
     basename, _, ext = origin_file.rpartition('.')
-    _, segments_file = mkstemp(prefix=basename, suffix='-segments.list')
+    _, segments_file = mkstemp(prefix=basename, suffix='-segments.list',
+                               dir=workdir)
     with open(segments_file, 'w') as fptr:
         fptr.writelines("file '%s'\n" % line for line in filenames)
 
     _, joined_filename = mkstemp(
         prefix=basename,
-        suffix='-onlymotion.%s' % ext)
+        suffix='-onlymotion.%s' % ext,
+        dir=workdir
+    )
     cmd = [
         'ffmpeg',
         '-loglevel', 'warning',
@@ -208,6 +215,10 @@ def main():
     logging.basicConfig(level=0)
     args = parse_args()
 
+    if args.workdir and not exists(args.workdir):
+        LOG.error('Workdir %s is missing!', args.workdir)
+        return 1
+
     switch_detector = SwitchDetector(args.filename, None)
     pipeline = MyPipeline(switch_detector)
     LOG.info('Processing %s', args.filename)
@@ -231,9 +242,19 @@ def main():
         LOG.info('Only 1 segment remains: Nothing to extract')
     else:
         LOG.info('Extracting %d segments', len(merged_segments))
-        keyed_filename = create_keyframes(args.filename, merged_segments, fps)
-        segments = extract_segments(keyed_filename, merged_segments, fps)
-        joined_filename = join(args.filename, segments, cleanup=args.cleanup)
+        keyed_filename = create_keyframes(
+            args.filename, merged_segments, fps, workdir=args.workdir)
+        segments = extract_segments(
+            keyed_filename,
+            merged_segments,
+            fps,
+            workdir=args.workdir
+        )
+        joined_filename = join(
+            args.filename,
+            segments,
+            cleanup=args.cleanup,
+            workdir=args.workdir)
         if args.cleanup:
             do_cleanup(keyed_filename)
         if args.backup:
