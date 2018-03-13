@@ -1,5 +1,5 @@
 from shutil import move
-from os.path import basename
+from os.path import basename, join as pjoin
 from os import unlink
 import logging
 from subprocess import check_call
@@ -83,6 +83,11 @@ def parse_args():
     from argparse import ArgumentParser
     parser = ArgumentParser()
     parser.add_argument('filename')
+    parser.add_argument('-n', '--no-backup', dest='backup', default=True,
+                        action='store_false',
+                        help='Do not keep a .bak file of the modified video.')
+    parser.add_argument('-d', '--destination', default='',
+                        help='Destination folder of the modified video')
     return parser.parse_args()
 
 
@@ -236,8 +241,15 @@ def main():
         segments = extract_segments(keyed_filename, merged_segments, fps)
         joined_filename = join(args.filename, segments)
         unlink(keyed_filename)
-        move(args.filename, args.filename + '.bak')
+        if args.backup:
+            backup_filename = args.filename + '.bak'
+            LOG.info('Backing up original file as %s', backup_filename)
+            move(args.filename, backup_filename)
         move(joined_filename, args.filename)
+        if args.destination:
+            final_destination = pjoin(args.destination, args.filename)
+            LOG.info('Moving to %s', final_destination)
+            move(args.filename, final_destination)
 
 
 if __name__ == '__main__':
