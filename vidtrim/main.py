@@ -4,7 +4,7 @@ from glob import glob
 from os import unlink
 from os.path import basename, exists
 from os.path import join as pjoin
-from shutil import move
+from shutil import copystat, move
 from subprocess import check_call
 from tempfile import mkstemp
 
@@ -52,8 +52,8 @@ class SwitchDetector:
             if self.current_state == 'motion':
                 self.current_state = 'still'
                 self.segments[-1].end = self.position
-                LOG.info('%s | Added segment: %r (%.2f%%)',
-                         self.basename, self.segments[-1], progress)
+                LOG.debug('%s | Added segment: %r (%.2f%%)',
+                          self.basename, self.segments[-1], progress)
         self.position += 1
         return MutatorOutput([], regions)
 
@@ -98,8 +98,8 @@ def merge_segments(segments, end_position, threshold):
             merged_segments.append(segment)
     if merged_segments[-1].end is None:
         # we reached the end
-        LOG.info('Open-ended segment. Setting to max frame number (%s)',
-                 end_position)
+        LOG.debug('Open-ended segment. Setting to max frame number (%s)',
+                  end_position)
         merged_segments[-1].end = end_position
     return merged_segments
 
@@ -128,7 +128,7 @@ def create_keyframes(filename, segments, fps, workdir=None):
 
 def extract_segments(input_file, segments, fps, workdir=None):
     for segment in segments:
-        LOG.info('Extracting %s', segment)
+        LOG.debug('Extracting %s', segment)
         basename, _, ext = input_file.rpartition('.')
         start = segment.start // fps
         _, outfile = mkstemp(prefix=basename,
@@ -257,11 +257,14 @@ def process(filename, destination, workdir, do_cleanup, do_backup):
             workdir=workdir)
         if do_cleanup:
             remove(keyed_filename)
+        original_file = filename
         if do_backup:
             backup_filename = filename + '.bak'
             LOG.info('Backing up original file as %s', backup_filename)
             move(filename, backup_filename)
+            original_file = backup_filename
         move(joined_filename, filename)
+        copystat(original_file, filename)
         if destination:
             final_destination = pjoin(destination, file_basename)
             LOG.info('Moving to %s', final_destination)
@@ -281,16 +284,24 @@ def main():
         unglobbed |= set(glob(filename))
 
     with concurrent.futures.ProcessPoolExecutor() as executor:
-        futures = []
+        future_to_filename = {}
         for filename in sorted(unglobbed):
-            futures.append(executor.submit(
+            future_to_filename[executor.submit(
                 process, filename, args.destination, args.workdir,
-                args.cleanup, args.backup))
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                print(future.result())
-            except Exception as exc:
-                print('%s generated an exception: %s' % (future, exc))
+                args.cleanup, args.backup)] = filename
+
+        keep_waiting = True
+        while keep_waiting:
+            done, pending = concurrent.futures.wait(
+                future_to_filename, timeout=1)
+            if not pending:
+                keep_waiting = False
+            LOG.info('Overall progress: (%d/%d done) %3.2f%%',
+                     len(done),
+                     len(future_to_filename),
+                     (len(done)/len(future_to_filename)*100))
+            finished_filenames = [future_to_filename[f] for f in done]
+            LOG.info('Finished: %r', finished_filenames)
 
 
 if __name__ == '__main__':
