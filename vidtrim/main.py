@@ -52,8 +52,8 @@ class SwitchDetector:
             if self.current_state == 'motion':
                 self.current_state = 'still'
                 self.segments[-1].end = self.position
-                LOG.info('%s | Added segment: %r (%.2f%%)',
-                         self.basename, self.segments[-1], progress)
+                LOG.debug('%s | Added segment: %r (%.2f%%)',
+                          self.basename, self.segments[-1], progress)
         self.position += 1
         return MutatorOutput([], regions)
 
@@ -98,8 +98,8 @@ def merge_segments(segments, end_position, threshold):
             merged_segments.append(segment)
     if merged_segments[-1].end is None:
         # we reached the end
-        LOG.info('Open-ended segment. Setting to max frame number (%s)',
-                 end_position)
+        LOG.debug('Open-ended segment. Setting to max frame number (%s)',
+                  end_position)
         merged_segments[-1].end = end_position
     return merged_segments
 
@@ -128,7 +128,7 @@ def create_keyframes(filename, segments, fps, workdir=None):
 
 def extract_segments(input_file, segments, fps, workdir=None):
     for segment in segments:
-        LOG.info('Extracting %s', segment)
+        LOG.debug('Extracting %s', segment)
         basename, _, ext = input_file.rpartition('.')
         start = segment.start // fps
         _, outfile = mkstemp(prefix=basename,
