@@ -1,0 +1,20 @@
+[[source]]
+
+name = "pypi"
+verify_ssl = true
+url = "https://pypi.python.org/simple"
+
+
+[requires]
+
+python_version = "3.5"
+
+
+[packages]
+
+raspicam = {editable = true, git = "https://github.com/exhuma/raspicam.git", ref = "develop"}
+opencv-python = "*"
+
+
+[dev-packages]
+
