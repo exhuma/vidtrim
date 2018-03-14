@@ -4,7 +4,7 @@ from glob import glob
 from os import unlink
 from os.path import basename, exists
 from os.path import join as pjoin
-from shutil import move
+from shutil import copystat, move
 from subprocess import check_call
 from tempfile import mkstemp
 
@@ -257,11 +257,14 @@ def process(filename, destination, workdir, do_cleanup, do_backup):
             workdir=workdir)
         if do_cleanup:
             remove(keyed_filename)
+        original_file = filename
         if do_backup:
             backup_filename = filename + '.bak'
             LOG.info('Backing up original file as %s', backup_filename)
             move(filename, backup_filename)
+            original_file = backup_filename
         move(joined_filename, filename)
+        copystat(original_file, filename)
         if destination:
             final_destination = pjoin(destination, file_basename)
             LOG.info('Moving to %s', final_destination)
