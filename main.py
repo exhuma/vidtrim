@@ -1,5 +1,6 @@
 import concurrent.futures
 import logging
+from glob import glob
 from os import unlink
 from os.path import basename, exists
 from os.path import join as pjoin
@@ -275,9 +276,13 @@ def main():
         LOG.error('Workdir %s is missing!', args.workdir)
         return 1
 
+    unglobbed = set()
+    for filename in args.filenames:
+        unglobbed |= set(glob(filename))
+
     with concurrent.futures.ProcessPoolExecutor() as executor:
         futures = []
-        for filename in args.filenames:
+        for filename in sorted(unglobbed):
             futures.append(executor.submit(
                 process, filename, args.destination, args.workdir,
                 args.cleanup, args.backup))
