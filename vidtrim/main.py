@@ -284,16 +284,24 @@ def main():
         unglobbed |= set(glob(filename))
 
     with concurrent.futures.ProcessPoolExecutor() as executor:
-        futures = []
+        future_to_filename = {}
         for filename in sorted(unglobbed):
-            futures.append(executor.submit(
+            future_to_filename[executor.submit(
                 process, filename, args.destination, args.workdir,
-                args.cleanup, args.backup))
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                print(future.result())
-            except Exception as exc:
-                print('%s generated an exception: %s' % (future, exc))
+                args.cleanup, args.backup)] = filename
+
+        keep_waiting = True
+        while keep_waiting:
+            done, pending = concurrent.futures.wait(
+                future_to_filename, timeout=1)
+            if not pending:
+                keep_waiting = False
+            LOG.info('Overall progress: (%d/%d done) %3.2f%%',
+                     len(done),
+                     len(future_to_filename),
+                     (len(done)/len(future_to_filename)*100))
+            finished_filenames = [future_to_filename[f] for f in done]
+            LOG.info('Finished: %r', finished_filenames)
 
 
 if __name__ == '__main__':
