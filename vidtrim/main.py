@@ -1,7 +1,8 @@
 import concurrent.futures
 import logging
 from glob import glob
-from os import unlink
+from logging import FileHandler, Formatter, StreamHandler
+from logging.handlers import RotatingFileHandler
 from os.path import basename, exists
 from os.path import join as pjoin
 from shutil import copystat, move
@@ -9,6 +10,7 @@ from subprocess import check_call
 from tempfile import mkstemp
 
 import cv2
+from gouge.colourcli import Simple
 from raspicam.localtypes import Dimension
 from raspicam.pipeline import (DetectionPipeline, MotionDetector,
                                MutatorOutput, blur, resizer, togray)
@@ -82,6 +84,11 @@ def parse_args():
     parser.add_argument('-C', '--no-cleanup', dest='cleanup', default=True,
                         action='store_false',
                         help='Do not remove temporary files.')
+    parser.add_argument('--trace-file', dest='trace_file', default='',
+                        help='Trace log')
+    parser.add_argument('--grow-trace-file', dest='rotate_trace_file',
+                        default=True, action='store_false',
+                        help='Do not automatically rotate trace file')
     parser.add_argument('-w', '--work-dir', dest='workdir', default=None,
                         help='Folder to store temporary files.')
     return parser.parse_args()
@@ -271,9 +278,28 @@ def process(filename, destination, workdir, do_cleanup, do_backup):
             move(filename, final_destination)
 
 
+def setup_logging(trace_file='', rotate_trace_file=True):
+    console_handler = StreamHandler()
+    console_handler.setFormatter(Simple(show_threads=True))
+    console_handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(console_handler)
+    logging.getLogger().setLevel(logging.DEBUG)
+    if trace_file:
+        if rotate_trace_file:
+            handler = RotatingFileHandler(
+                trace_file, maxBytes=1024*1024*5, backupCount=5)
+        else:
+            handler = FileHandler(trace_file)
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(Formatter(
+            '%(asctime)s | %(threadName)s | %(name)s | %(levelname)s | %(message)s'
+        ))
+        logging.getLogger().addHandler(handler)
+
+
 def main():
-    logging.basicConfig(level=logging.INFO)
     args = parse_args()
+    setup_logging(args.trace_file, args.rotate_trace_file)
 
     if args.workdir and not exists(args.workdir):
         LOG.error('Workdir %s is missing!', args.workdir)
@@ -301,7 +327,10 @@ def main():
                      len(future_to_filename),
                      (len(done)/len(future_to_filename)*100))
             finished_filenames = [future_to_filename[f] for f in done]
-            LOG.info('Finished: %r', finished_filenames)
+        for f in future_to_filename:
+            LOG.info('%r finished: %s',
+                     future_to_filename[f],
+                     (not f.cancelled() and f.done()))
 
 
 if __name__ == '__main__':
