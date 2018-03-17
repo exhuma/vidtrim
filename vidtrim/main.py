@@ -268,6 +268,8 @@ def process(filename, destination, workdir, do_cleanup, do_backup):
         original_file = filename
         if do_backup:
             backup_filename = filename + '.bak'
+            if destination:
+                backup_filename = pjoin(destination, backup_filename)
             LOG.info('Backing up original file as %s', backup_filename)
             move(filename, backup_filename)
             original_file = backup_filename
