@@ -3,6 +3,7 @@ import logging
 from glob import glob
 from logging import FileHandler, Formatter, StreamHandler
 from logging.handlers import RotatingFileHandler
+from os import unlink
 from os.path import basename, exists
 from os.path import join as pjoin
 from shutil import copystat, move
