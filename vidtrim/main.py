@@ -119,8 +119,10 @@ def create_keyframes(filename, segments, fps, workdir=None):
         keyframes.append(str(segment.start // fps))
         keyframes.append(str(segment.end // fps))
     args = ','.join(keyframes)
-    _, keyed_filename = mkstemp(prefix=basename, suffix='-keyframes.%s' % ext,
-                                dir=workdir)
+    fptr, keyed_filename = mkstemp(prefix=basename,
+                                   suffix='-keyframes.%s' % ext,
+                                   dir=workdir)
+    fptr.close()
     cmd = [
         'ffmpeg',
         '-loglevel', 'warning',
@@ -139,9 +141,10 @@ def extract_segments(input_file, segments, fps, workdir=None):
         LOG.debug('Extracting %s', segment)
         basename, _, ext = input_file.rpartition('.')
         start = segment.start // fps
-        _, outfile = mkstemp(prefix=basename,
-                             suffix='-strip-%s.%s' % (start, ext),
-                             dir=workdir)
+        fptr, outfile = mkstemp(prefix=basename,
+                                suffix='-strip-%s.%s' % (start, ext),
+                                dir=workdir)
+        fptr.close()
         cmd = [
             'ffmpeg',
             '-loglevel', 'warning',
@@ -165,16 +168,18 @@ def extract_segments(input_file, segments, fps, workdir=None):
 def join(origin_file, segments, do_cleanup=True, workdir=None):
     filenames = list(segments)
     basename, _, ext = origin_file.rpartition('.')
-    _, segments_file = mkstemp(prefix=basename, suffix='-segments.list',
-                               dir=workdir)
+    fptr, segments_file = mkstemp(prefix=basename, suffix='-segments.list',
+                                  dir=workdir)
+    fptr.close()
     with open(segments_file, 'w') as fptr:
         fptr.writelines("file '%s'\n" % line for line in filenames)
 
-    _, joined_filename = mkstemp(
+    fptr, joined_filename = mkstemp(
         prefix=basename,
         suffix='-onlymotion.%s' % ext,
         dir=workdir
     )
+    fptr.close()
     cmd = [
         'ffmpeg',
         '-loglevel', 'warning',
