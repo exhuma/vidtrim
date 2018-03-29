@@ -19,6 +19,25 @@ from raspicam.pipeline import (DetectionPipeline, MotionDetector,
 LOG = logging.getLogger(__name__)
 
 
+class Job:
+
+    def __init__(self, filename, destination, workdir, cleanup, backup):
+        self.filename = filename
+        self.destination = destination
+        self.workdir = workdir
+        self.cleanup = cleanup
+        self.backup = backup
+        self.processed_frames = 0
+        self.total_frames = 0
+
+    @property
+    def progress(self):
+        if self.total_frames:
+            return self.processed_frames / self.total_frames
+        else:
+            return 0.0
+
+
 class MotionSegment:
 
     def __init__(self, start=None, end=None):
@@ -226,16 +245,28 @@ def remove(filename):
     unlink(filename)
 
 
-def process(filename, destination, workdir, do_cleanup, do_backup):
-    switch_detector = SwitchDetector(filename, None)
-    pipeline = MyPipeline(switch_detector)
-    LOG.info('Processing %s', filename)
-    file_basename = basename(filename)
+def progress_bar(progress, n=60):
+    num_filled = round(progress * n)
+    num_empty = n - num_filled
+    filled = '#' * num_filled
+    empty = '-' * num_empty
+    return '[%s%s]' % (filled, empty)
 
-    generator, total, fps = frame_generator(filename)
+
+def process(job):
+
+    switch_detector = SwitchDetector(job.filename, None)
+    pipeline = MyPipeline(switch_detector)
+    LOG.info('Processing %s', job.filename)
+    file_basename = basename(job.filename)
+
+    generator, total, fps = frame_generator(job.filename)
+    job.total_frames = total
     for pos, frame in generator():
-        LOG.debug('Processing frame %d/%d %3.2f%%' % (
-            pos, total, (pos/total)*100))
+        job.processed_frames =  pos
+        if pos % 300 == 0:
+            LOG.debug('Processing frame %d/%d %3.2f%%' % (
+                pos, total, (pos/total)*100))
         switch_detector.total_frames = total
         pipeline.feed(frame)
 
@@ -249,47 +280,47 @@ def process(filename, destination, workdir, do_cleanup, do_backup):
 
     if len(merged_segments) == 1:
         LOG.info('Only 1 segment remains: Nothing to extract')
-        if destination:
-            final_destination = pjoin(destination, file_basename)
+        if job.destination:
+            final_destination = pjoin(job.destination, file_basename)
             LOG.info('Moving to %s', final_destination)
-            move(filename, final_destination)
+            move(job.filename, final_destination)
     else:
         LOG.info('Extracting %d segments', len(merged_segments))
         keyed_filename = create_keyframes(
-            filename, merged_segments, fps, workdir=workdir)
+            job.filename, merged_segments, fps, workdir=job.workdir)
         segments = extract_segments(
             keyed_filename,
             merged_segments,
             fps,
-            workdir=workdir
+            workdir=job.workdir
         )
         joined_filename = join(
-            filename,
+            job.filename,
             segments,
-            do_cleanup=do_cleanup,
-            workdir=workdir)
-        if do_cleanup:
+            do_cleanup=job.do_cleanup,
+            workdir=job.workdir)
+        if job.do_cleanup:
             remove(keyed_filename)
-        original_file = filename
-        if do_backup:
-            backup_filename = filename + '.bak'
-            if destination:
-                backup_filename = pjoin(destination, backup_filename)
+        original_file = job.filename
+        if job.do_backup:
+            backup_filename = job.filename + '.bak'
+            if job.destination:
+                backup_filename = pjoin(job.destination, backup_filename)
             LOG.info('Backing up original file as %s', backup_filename)
-            move(filename, backup_filename)
+            move(job.filename, backup_filename)
             original_file = backup_filename
-        move(joined_filename, filename)
-        copystat(original_file, filename)
-        if destination:
-            final_destination = pjoin(destination, file_basename)
+        move(joined_filename, job.filename)
+        copystat(original_file, job.filename)
+        if job.destination:
+            final_destination = pjoin(job.destination, file_basename)
             LOG.info('Moving to %s', final_destination)
-            move(filename, final_destination)
+            move(job.filename, final_destination)
 
 
 def setup_logging(trace_file='', rotate_trace_file=True):
     console_handler = StreamHandler()
     console_handler.setFormatter(Simple(show_threads=True))
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(logging.ERROR)
     logging.getLogger().addHandler(console_handler)
     logging.getLogger().setLevel(logging.DEBUG)
     if trace_file:
@@ -317,12 +348,19 @@ def main():
     for filename in args.filenames:
         unglobbed |= set(glob(filename))
 
-    with concurrent.futures.ProcessPoolExecutor() as executor:
+    jobs = []
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
         future_to_filename = {}
         for filename in sorted(unglobbed):
-            future_to_filename[executor.submit(
-                process, filename, args.destination, args.workdir,
-                args.cleanup, args.backup)] = filename
+            job = Job(
+                filename,
+                args.destination,
+                args.workdir,
+                args.cleanup,
+                args.backup)
+            jobs.append(job)
+            future_to_filename[executor.submit(process, job)] = filename
 
         keep_waiting = True
         while keep_waiting:
@@ -335,6 +373,11 @@ def main():
                      len(future_to_filename),
                      (len(done)/len(future_to_filename)*100))
             finished_filenames = [future_to_filename[f] for f in done]
+            for job in jobs:
+                print('> %30s %s' % (
+                    job.filename[:30],
+                    progress_bar(job.progress)))
+            print(80*'-')
         for f in future_to_filename:
             LOG.info('%r finished: %s',
                      future_to_filename[f],
