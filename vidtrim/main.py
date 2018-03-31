@@ -16,6 +16,9 @@ from raspicam.localtypes import Dimension
 from raspicam.pipeline import (DetectionPipeline, MotionDetector,
                                MutatorOutput, blur, resizer, togray)
 
+from vidtrim.ui import Monitor
+
+
 LOG = logging.getLogger(__name__)
 
 
@@ -350,7 +353,7 @@ def main():
 
     jobs = []
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         future_to_filename = {}
         for filename in sorted(unglobbed):
             job = Job(
@@ -362,27 +365,8 @@ def main():
             jobs.append(job)
             future_to_filename[executor.submit(process, job)] = filename
 
-        keep_waiting = True
-        while keep_waiting:
-            done, pending = concurrent.futures.wait(
-                future_to_filename, timeout=1)
-            if not pending:
-                keep_waiting = False
-            LOG.info('Overall progress: (%d/%d done) %3.2f%%',
-                     len(done),
-                     len(future_to_filename),
-                     (len(done)/len(future_to_filename)*100))
-            finished_filenames = [future_to_filename[f] for f in done]
-            for job in jobs:
-                print('> %30s %s' % (
-                    job.filename[:30],
-                    progress_bar(job.progress)))
-            print(80*'-')
-        for f in future_to_filename:
-            LOG.info('%r finished: %s',
-                     future_to_filename[f],
-                     (not f.cancelled() and f.done()))
-
+        monitor = Monitor(jobs)
+        monitor.start()
 
 if __name__ == '__main__':
     main()
