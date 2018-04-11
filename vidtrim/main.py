@@ -3,7 +3,7 @@ import logging
 from glob import glob
 from logging import FileHandler, Formatter, StreamHandler
 from logging.handlers import RotatingFileHandler
-from os import unlink
+from os import close, unlink
 from os.path import basename, exists
 from os.path import join as pjoin
 from shutil import copystat, move
@@ -122,7 +122,7 @@ def create_keyframes(filename, segments, fps, workdir=None):
     fptr, keyed_filename = mkstemp(prefix=basename,
                                    suffix='-keyframes.%s' % ext,
                                    dir=workdir)
-    fptr.close()
+    close(fptr)
     cmd = [
         'ffmpeg',
         '-loglevel', 'warning',
@@ -144,7 +144,7 @@ def extract_segments(input_file, segments, fps, workdir=None):
         fptr, outfile = mkstemp(prefix=basename,
                                 suffix='-strip-%s.%s' % (start, ext),
                                 dir=workdir)
-        fptr.close()
+        close(fptr)
         cmd = [
             'ffmpeg',
             '-loglevel', 'warning',
@@ -170,7 +170,7 @@ def join(origin_file, segments, do_cleanup=True, workdir=None):
     basename, _, ext = origin_file.rpartition('.')
     fptr, segments_file = mkstemp(prefix=basename, suffix='-segments.list',
                                   dir=workdir)
-    fptr.close()
+    close(fptr)
     with open(segments_file, 'w') as fptr:
         fptr.writelines("file '%s'\n" % line for line in filenames)
 
@@ -179,7 +179,7 @@ def join(origin_file, segments, do_cleanup=True, workdir=None):
         suffix='-onlymotion.%s' % ext,
         dir=workdir
     )
-    fptr.close()
+    close(fptr)
     cmd = [
         'ffmpeg',
         '-loglevel', 'warning',
