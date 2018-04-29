@@ -3,15 +3,19 @@ import logging
 from glob import glob
 from logging import FileHandler, Formatter, StreamHandler
 from logging.handlers import RotatingFileHandler
+from math import floor
 from os import close, unlink
 from os.path import basename, exists
 from os.path import join as pjoin
+from queue import Queue
 from shutil import copystat, move
+from statistics import mean
 from subprocess import check_call
 from tempfile import mkstemp
 
 import cv2
 from gouge.colourcli import Simple
+
 from raspicam.localtypes import Dimension
 from raspicam.pipeline import (DetectionPipeline, MotionDetector,
                                MutatorOutput, blur, resizer, togray)
@@ -229,7 +233,7 @@ def remove(filename):
     unlink(filename)
 
 
-def process(filename, destination, workdir, do_cleanup, do_backup):
+def process(filename, queue, destination, workdir, do_cleanup, do_backup):
     switch_detector = SwitchDetector(filename, None)
     pipeline = MyPipeline(switch_detector)
     LOG.info('Processing %s', filename)
@@ -241,10 +245,12 @@ def process(filename, destination, workdir, do_cleanup, do_backup):
             pos, total, (pos/total)*100))
         switch_detector.total_frames = total
         pipeline.feed(frame)
+        queue.put(('detecting', filename, (pos/total) * 0.20))
 
     inter_frame_threshold = 100
     LOG.info('Merging segments which are closer than %d frames',
              inter_frame_threshold)
+    queue.put(('merging', filename, 0.40))
     merged_segments = merge_segments(
         switch_detector.segments,
         switch_detector.position,
@@ -255,17 +261,20 @@ def process(filename, destination, workdir, do_cleanup, do_backup):
         if destination:
             final_destination = pjoin(destination, file_basename)
             LOG.info('Moving to %s', final_destination)
+            queue.put(('done', filename, 1.0))
             move(filename, final_destination)
     else:
         LOG.info('Extracting %d segments', len(merged_segments))
         keyed_filename = create_keyframes(
             filename, merged_segments, fps, workdir=workdir)
+        queue.put(('extracting', filename, 0.60))
         segments = extract_segments(
             keyed_filename,
             merged_segments,
             fps,
             workdir=workdir
         )
+        queue.put(('joining', filename, 0.80))
         joined_filename = join(
             filename,
             segments,
@@ -287,12 +296,13 @@ def process(filename, destination, workdir, do_cleanup, do_backup):
             final_destination = pjoin(destination, file_basename)
             LOG.info('Moving to %s', final_destination)
             move(filename, final_destination)
+        queue.put(('done', filename, 1.0))
 
 
 def setup_logging(trace_file='', rotate_trace_file=True):
     console_handler = StreamHandler()
-    console_handler.setFormatter(Simple(show_threads=True))
-    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(Simple(show_threads=True, show_exc=True))
+    console_handler.setLevel(logging.ERROR)
     logging.getLogger().addHandler(console_handler)
     logging.getLogger().setLevel(logging.DEBUG)
     if trace_file:
@@ -308,6 +318,48 @@ def setup_logging(trace_file='', rotate_trace_file=True):
         logging.getLogger().addHandler(handler)
 
 
+def print_progress(map):
+    all_progress = []
+    pending_count = 0
+    done_count = 0
+    for filename, details in sorted(map.items()):
+        state = details['state']
+        progress = details['progress'] * 100
+        error = details.get('error', '')
+        all_progress.append(details['progress'])
+        if state == 'pending':
+            pending_count += 1
+            continue
+        if state in 'done':
+            done_count += 1
+            continue
+        print('%-30s [%10s]: %3.2f%%%s' % (basename(filename)[:30], state, progress, error))
+        if error:
+            LOG.exception(error)
+    print(80*'-')
+    print('pending/done/total: %d/%d/%s' % (pending_count, done_count, len(map)))
+    print(80*'-')
+    overall_progress = mean(all_progress)
+    print('Overall: %s %3.2f' % (progress_bar(overall_progress),
+                                 overall_progress * 100))
+    print(80*'-')
+
+
+def progress_bar(value,  length=40):
+    # Block progression is 1/8
+    blocks = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"]
+    lsep, rsep = "[", "]"
+
+    v = value*length
+    x = floor(v)  # integer part
+    y = v - x  # fractional part
+    i = int(round(y*8))
+    bar = "█"*x + blocks[i]
+    n = length-len(bar)
+    bar = lsep + bar + " "*n + rsep
+    return bar
+
+
 def main():
     args = parse_args()
     setup_logging(args.trace_file, args.rotate_trace_file)
@@ -321,11 +373,16 @@ def main():
         unglobbed |= set(glob(filename))
     supported_files = {fn for fn in unglobbed if fn[-3:] in SUPPORTED_EXTS}
 
-    with concurrent.futures.ProcessPoolExecutor() as executor:
+    queue = Queue()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         future_to_filename = {}
+        progress_map = {
+            filename: {'state': 'pending', 'progress': 0.0}
+            for filename in supported_files
+        }
         for filename in sorted(supported_files):
             future_to_filename[executor.submit(
-                process, filename, args.destination, args.workdir,
+                process, filename, queue, args.destination, args.workdir,
                 args.cleanup, args.backup)] = filename
 
         keep_waiting = True
@@ -334,14 +391,18 @@ def main():
                 future_to_filename, timeout=1)
             if not pending:
                 keep_waiting = False
-            LOG.info('Overall progress: (%d/%d done) %3.2f%%',
-                     len(done),
-                     len(future_to_filename),
-                     (len(done)/len(future_to_filename)*100))
-        for f in future_to_filename:
-            LOG.info('%r finished: %s',
-                     future_to_filename[f],
-                     (not f.cancelled() and f.done()))
+
+            while queue.qsize():
+                state, filename, progress = queue.get()
+                progress_map[filename]['state'] = state
+                progress_map[filename]['progress'] = progress
+
+            for future in done:
+                exc = future.exception()
+                if exc:
+                    progress_map[future_to_filename[future]]['state'] = 'error'
+                    progress_map[future_to_filename[future]]['error'] = exc
+            print_progress(progress_map)
 
 
 if __name__ == '__main__':
