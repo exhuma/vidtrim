@@ -350,7 +350,7 @@ def print_progress(map):
         if state in 'done':
             done_count += 1
             continue
-        print('%-30s [%10s]: % 3.2f%% %s' % (
+        print('%-30s [%10s]: %6.2f%% %s' % (
             basename(filename)[:30],
             state,
             (progress * 100),
