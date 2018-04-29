@@ -336,7 +336,6 @@ def main():
                      len(done),
                      len(future_to_filename),
                      (len(done)/len(future_to_filename)*100))
-            finished_filenames = [future_to_filename[f] for f in done]
         for f in future_to_filename:
             LOG.info('%r finished: %s',
                      future_to_filename[f],
