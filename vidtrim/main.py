@@ -3,6 +3,7 @@ import curses
 import logging
 import os
 import sys
+from datetime import datetime, timedelta
 from glob import glob
 from logging import FileHandler, Formatter, StreamHandler
 from logging.handlers import RotatingFileHandler
@@ -334,11 +335,12 @@ def setup_logging(trace_file='', rotate_trace_file=True):
         logging.getLogger().addHandler(handler)
 
 
-def print_progress(map):
+def print_progress(start_time, map):
     clear_screen()
     all_progress = []
     pending_count = 0
     done_count = 0
+
     for filename, details in sorted(map.items()):
         state = details['state']
         progress = details['progress']
@@ -358,12 +360,21 @@ def print_progress(map):
         ))
         if error:
             LOG.exception(error)
+
+    current_time = datetime.now()
+    elapsed_time = current_time - start_time
+    overall_progress = mean(all_progress)
+    percent_per_second = overall_progress / elapsed_time.total_seconds()
+    estimated_time = timedelta(seconds=100.0/percent_per_second)
+
     print(80*'-')
     print('pending/done/total: %d/%d/%s' % (pending_count, done_count, len(map)))
     print(80*'-')
-    overall_progress = mean(all_progress)
-    print('Overall: %s %3.2f' % (progress_bar(overall_progress),
-                                 overall_progress * 100))
+    print('Overall: %s %3.2f %s' % (
+        progress_bar(overall_progress),
+        overall_progress * 100,
+        estimated_time,
+    ))
     print(80*'-')
 
 
@@ -385,6 +396,7 @@ def progress_bar(value,  length=40):
 def main():
     args = parse_args()
     setup_logging(args.trace_file, args.rotate_trace_file)
+    start_time = datetime.now()
 
     if args.workdir and not exists(args.workdir):
         LOG.error('Workdir %s is missing!', args.workdir)
@@ -424,7 +436,7 @@ def main():
                 if exc:
                     progress_map[future_to_filename[future]]['state'] = 'error'
                     progress_map[future_to_filename[future]]['error'] = exc
-            print_progress(progress_map)
+            print_progress(start_time, progress_map)
 
 
 if __name__ == '__main__':
