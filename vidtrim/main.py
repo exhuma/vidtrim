@@ -9,7 +9,7 @@ from logging import FileHandler, Formatter, StreamHandler
 from logging.handlers import RotatingFileHandler
 from math import floor
 from os import close, unlink
-from os.path import basename, exists
+from os.path import basename, exists, getsize
 from os.path import join as pjoin
 from queue import Queue
 from shutil import copystat, move
@@ -81,6 +81,14 @@ class MyPipeline(DetectionPipeline):
             MotionDetector(),
             switch_detector
         ])
+
+
+def sizeof_fmt(num, suffix='B'):
+    for unit in ['','Ki','Mi','Gi','Ti','Pi','Ei','Zi']:
+        if abs(num) < 1024.0:
+            return "%3.1f%s%s" % (num, unit, suffix)
+        num /= 1024.0
+    return "%.1f%s%s" % (num, 'Yi', suffix)
 
 
 def parse_args():
@@ -250,12 +258,12 @@ def process(filename, queue, destination, workdir, do_cleanup, do_backup):
             pos, total, (pos/total)*100))
         switch_detector.total_frames = total
         pipeline.feed(frame)
-        queue.put(('detecting', filename, (pos/total) * 0.40))
+        queue.put(('detecting', filename, (pos/total) * 0.40, None))
 
     inter_frame_threshold = 100
     LOG.info('Merging segments which are closer than %d frames',
              inter_frame_threshold)
-    queue.put(('merging', filename, 0.40))
+    queue.put(('merging', filename, 0.40, None))
     merged_segments = merge_segments(
         switch_detector.segments,
         switch_detector.position,
@@ -266,20 +274,21 @@ def process(filename, queue, destination, workdir, do_cleanup, do_backup):
         if destination:
             final_destination = pjoin(destination, file_basename)
             LOG.info('Moving to %s', final_destination)
-            queue.put(('done', filename, 1.0))
+            final_filesize = getsize(filename)
+            queue.put(('done', filename, 1.0, final_filesize))
             move(filename, final_destination)
     else:
         LOG.info('Extracting %d segments', len(merged_segments))
         keyed_filename = create_keyframes(
             filename, merged_segments, fps, workdir=workdir)
-        queue.put(('extracting', filename, 0.60))
+        queue.put(('extracting', filename, 0.60, None))
         segments = extract_segments(
             keyed_filename,
             merged_segments,
             fps,
             workdir=workdir
         )
-        queue.put(('joining', filename, 0.80))
+        queue.put(('joining', filename, 0.80, None))
         joined_filename = join(
             filename,
             segments,
@@ -301,7 +310,8 @@ def process(filename, queue, destination, workdir, do_cleanup, do_backup):
             final_destination = pjoin(destination, file_basename)
             LOG.info('Moving to %s', final_destination)
             move(filename, final_destination)
-        queue.put(('done', filename, 1.0))
+        final_filesize = getsize(final_destination)
+        queue.put(('done', filename, 1.0, final_filesize))
 
 
 def clear_screen():
@@ -340,6 +350,12 @@ def print_progress(start_time, map):
     all_progress = []
     pending_count = 0
     done_count = 0
+    total_old_size = sum(item['old_size'] for item in map.values())
+    total_new_size = total_old_size - sum(
+        item.get('new_size', 0) for item in map.values()
+        if item.get('new_size', 0) is not None
+    )
+    saved_size = total_old_size - total_new_size
 
     for filename, details in sorted(map.items()):
         state = details['state']
@@ -369,6 +385,10 @@ def print_progress(start_time, map):
 
     print(80*'-')
     print('pending/done/total: %d/%d/%s' % (pending_count, done_count, len(map)))
+    print(80*'-')
+    print('Old size:   %9s' % sizeof_fmt(total_old_size))
+    print('New size:   %9s' % sizeof_fmt(total_new_size))
+    print('Saved size: %9s' % sizeof_fmt(saved_size))
     print(80*'-')
     print('Overall: %s %3.2f %s' % (
         progress_bar(overall_progress),
@@ -411,7 +431,11 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         future_to_filename = {}
         progress_map = {
-            filename: {'state': 'pending', 'progress': 0.0}
+            filename: {
+                'state': 'pending',
+                'progress': 0.0,
+                'old_size': getsize(filename)
+            }
             for filename in supported_files
         }
         for filename in sorted(supported_files):
@@ -427,9 +451,10 @@ def main():
                 keep_waiting = False
 
             while queue.qsize():
-                state, filename, progress = queue.get()
+                state, filename, progress, new_size = queue.get()
                 progress_map[filename]['state'] = state
                 progress_map[filename]['progress'] = progress
+                progress_map[filename]['new_size'] = new_size
 
             for future in done:
                 exc = future.exception()
