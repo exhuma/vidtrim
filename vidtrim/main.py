@@ -1,5 +1,8 @@
 import concurrent.futures
+import curses
 import logging
+import os
+import sys
 from glob import glob
 from logging import FileHandler, Formatter, StreamHandler
 from logging.handlers import RotatingFileHandler
@@ -22,6 +25,7 @@ from raspicam.pipeline import (DetectionPipeline, MotionDetector,
 
 LOG = logging.getLogger(__name__)
 SUPPORTED_EXTS = {'mkv'}
+TTY_CLEAR_SEQ = None
 
 
 class MotionSegment:
@@ -299,6 +303,18 @@ def process(filename, queue, destination, workdir, do_cleanup, do_backup):
         queue.put(('done', filename, 1.0))
 
 
+def clear_screen():
+    global TTY_CLEAR_SEQ
+    if TTY_CLEAR_SEQ is None:
+        if sys.stdout.isatty():
+            curses.setupterm()
+            TTY_CLEAR_SEQ = curses.tigetstr('clear')
+        else:
+            TTY_CLEAR_SEQ = b''
+    if TTY_CLEAR_SEQ:
+        os.write(sys.stdout.fileno(), TTY_CLEAR_SEQ)
+
+
 def setup_logging(trace_file='', rotate_trace_file=True):
     console_handler = StreamHandler()
     console_handler.setFormatter(Simple(show_threads=True, show_exc=True))
@@ -319,6 +335,7 @@ def setup_logging(trace_file='', rotate_trace_file=True):
 
 
 def print_progress(map):
+    clear_screen()
     all_progress = []
     pending_count = 0
     done_count = 0
