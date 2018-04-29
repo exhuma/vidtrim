@@ -250,7 +250,7 @@ def process(filename, queue, destination, workdir, do_cleanup, do_backup):
             pos, total, (pos/total)*100))
         switch_detector.total_frames = total
         pipeline.feed(frame)
-        queue.put(('detecting', filename, (pos/total) * 0.20))
+        queue.put(('detecting', filename, (pos/total) * 0.40))
 
     inter_frame_threshold = 100
     LOG.info('Merging segments which are closer than %d frames',
