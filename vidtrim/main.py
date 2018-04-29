@@ -17,6 +17,7 @@ from raspicam.pipeline import (DetectionPipeline, MotionDetector,
                                MutatorOutput, blur, resizer, togray)
 
 LOG = logging.getLogger(__name__)
+SUPPORTED_EXTS = {'mkv'}
 
 
 class MotionSegment:
@@ -316,10 +317,11 @@ def main():
     unglobbed = set()
     for filename in args.filenames:
         unglobbed |= set(glob(filename))
+    supported_files = {fn for fn in unglobbed if fn[-3:] in SUPPORTED_EXTS}
 
     with concurrent.futures.ProcessPoolExecutor() as executor:
         future_to_filename = {}
-        for filename in sorted(unglobbed):
+        for filename in sorted(supported_files):
             future_to_filename[executor.submit(
                 process, filename, args.destination, args.workdir,
                 args.cleanup, args.backup)] = filename
