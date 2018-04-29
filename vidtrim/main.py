@@ -324,16 +324,21 @@ def print_progress(map):
     done_count = 0
     for filename, details in sorted(map.items()):
         state = details['state']
-        progress = details['progress'] * 100
+        progress = details['progress']
         error = details.get('error', '')
-        all_progress.append(details['progress'])
+        all_progress.append(progress)
         if state == 'pending':
             pending_count += 1
             continue
         if state in 'done':
             done_count += 1
             continue
-        print('%-30s [%10s]: %3.2f%%%s' % (basename(filename)[:30], state, progress, error))
+        print('%-30s [%10s]: % 3.2f%% %s' % (
+            basename(filename)[:30],
+            state,
+            (progress * 100),
+            error or progress_bar(progress, length=20),
+        ))
         if error:
             LOG.exception(error)
     print(80*'-')
