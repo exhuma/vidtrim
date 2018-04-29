@@ -115,19 +115,19 @@ def merge_segments(segments, end_position, threshold):
 
 def create_keyframes(filename, segments, fps, workdir=None):
     keyframes = []
-    basename, _, ext = filename.rpartition('.')
+    without_ext, _, ext = filename.rpartition('.')
     for segment in segments:
         keyframes.append(str(segment.start // fps))
         keyframes.append(str(segment.end // fps))
     args = ','.join(keyframes)
-    fptr, keyed_filename = mkstemp(prefix=basename,
+    fptr, keyed_filename = mkstemp(prefix=basename(filename),
                                    suffix='-keyframes.%s' % ext,
                                    dir=workdir)
     close(fptr)
     cmd = [
         'ffmpeg',
         '-loglevel', 'warning',
-        '-i', '%s.%s' % (basename, ext),
+        '-i', '%s.%s' % (without_ext, ext),
         '-force_key_frames', args,
         '-y',
         keyed_filename
@@ -140,9 +140,9 @@ def create_keyframes(filename, segments, fps, workdir=None):
 def extract_segments(input_file, segments, fps, workdir=None):
     for segment in segments:
         LOG.debug('Extracting %s', segment)
-        basename, _, ext = input_file.rpartition('.')
+        without_ext, _, ext = input_file.rpartition('.')
         start = segment.start // fps
-        fptr, outfile = mkstemp(prefix=basename,
+        fptr, outfile = mkstemp(prefix=basename(input_file),
                                 suffix='-strip-%s.%s' % (start, ext),
                                 dir=workdir)
         close(fptr)
@@ -152,7 +152,7 @@ def extract_segments(input_file, segments, fps, workdir=None):
             '-ss',
             str(start),
             '-i',
-            '%s.%s' % (basename, ext),
+            '%s.%s' % (without_ext, ext),
             '-t', str(segment.duration // fps),
             '-vcodec',
             'copy',
@@ -168,15 +168,17 @@ def extract_segments(input_file, segments, fps, workdir=None):
 
 def join(origin_file, segments, do_cleanup=True, workdir=None):
     filenames = list(segments)
-    basename, _, ext = origin_file.rpartition('.')
-    fptr, segments_file = mkstemp(prefix=basename, suffix='-segments.list',
-                                  dir=workdir)
+    without_ext, _, ext = origin_file.rpartition('.')
+    fptr, segments_file = mkstemp(
+        prefix=basename(origin_file),
+        suffix='-segments.list',
+        dir=workdir)
     close(fptr)
     with open(segments_file, 'w') as fptr:
         fptr.writelines("file '%s'\n" % line for line in filenames)
 
     fptr, joined_filename = mkstemp(
-        prefix=basename,
+        prefix=basename(origin_file),
         suffix='-onlymotion.%s' % ext,
         dir=workdir
     )
@@ -275,7 +277,7 @@ def process(filename, destination, workdir, do_cleanup, do_backup):
         if do_backup:
             backup_filename = filename + '.bak'
             if destination:
-                backup_filename = pjoin(destination, backup_filename)
+                backup_filename = pjoin(destination, basename(backup_filename))
             LOG.info('Backing up original file as %s', backup_filename)
             move(filename, backup_filename)
             original_file = backup_filename
