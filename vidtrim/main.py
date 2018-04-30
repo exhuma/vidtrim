@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timedelta
+from enum import Enum
 from glob import glob
 from logging import FileHandler, Formatter, StreamHandler
 from logging.handlers import RotatingFileHandler
@@ -14,7 +15,7 @@ from os.path import join as pjoin
 from queue import Queue
 from shutil import copystat, move
 from statistics import mean
-from subprocess import check_call
+from subprocess import PIPE, STDOUT, CalledProcessError, Popen
 from tempfile import mkstemp
 
 import cv2
@@ -23,10 +24,64 @@ from gouge.colourcli import Simple
 from raspicam.localtypes import Dimension
 from raspicam.pipeline import (DetectionPipeline, MotionDetector,
                                MutatorOutput, blur, resizer, togray)
+from vidtrim.util import parse_ffmpeg_progress
 
 LOG = logging.getLogger(__name__)
 SUPPORTED_EXTS = {'mkv'}
 TTY_CLEAR_SEQ = None
+MAX_WORKERS = 5
+
+
+class FFMpegState(Enum):
+    INITIAL = 'initial'
+    INPUT = 'input'
+    OUTPUT = 'output'
+    HAVE_DURATION = 'have_duration'
+    RUNNING = 'running'
+
+
+class FFMpegProgress:
+
+    def __init__(self, progress_callback=None):
+        self.state = FFMpegState.INITIAL
+        self.progress_callback = progress_callback
+        self.__lines = []
+
+    @property
+    def lines(self):
+        return '\n'.join(self.__lines)
+
+    def feed(self, line):
+        self.__lines.append(line)
+        func = getattr(self, '%s_feed' % self.state.value, None)
+        if func:
+            func(line)
+        else:
+            LOG.error('No handler available for state %s', self.state)
+
+    def initial_feed(self, line):
+        if line.startswith('Input'):
+            self.state = FFMpegState.INPUT
+        elif line.strip().startswith('frame='):
+            data = parse_ffmpeg_progress(line)
+            if self.progress_callback:
+                self.progress_callback(data)
+
+    def input_feed(self, line):
+        line = line.strip()
+        if not line.strip().startswith('Duration:'):
+            return
+
+        duration, start, bitrate = line.split(',')
+        _, duration = duration.split(':', 1)
+        _, start = start.split(':', 1)
+        _, bitrate = bitrate.split(':', 1)
+        duration = duration.strip()
+        start = start.strip()
+        bitrate = bitrate.strip()
+        LOG.debug('ffmpeg input: duration=%s, start=%s, bitrate=%s',
+                  duration, start, bitrate)
+        self.state = FFMpegState.INITIAL
 
 
 class MotionSegment:
@@ -130,7 +185,42 @@ def merge_segments(segments, end_position, threshold):
     return merged_segments
 
 
-def create_keyframes(filename, segments, fps, workdir=None):
+def run_ffmpeg(args, input_framecount=None, progress_callback=None):
+    cmd = [
+        'ffmpeg',
+        # '-loglevel', 'warning',
+        '-stats',
+        '-y',
+        *args
+    ]
+    LOG.debug('Running %r', ' '.join(cmd))
+
+    proc = Popen(cmd, stdout=PIPE, stderr=STDOUT,
+                 env={'AV_LOG_FORCE_NOCOLOR': '1'},
+                 bufsize=1,
+                 universal_newlines=True)
+
+    progress_monitor = None
+    if input_framecount:
+        def handle_progess(data):
+            if progress_callback:
+                progress_callback(data['frame'] / input_framecount)
+
+        progress_monitor = FFMpegProgress(handle_progess)
+        for line in iter(proc.stdout.readline, ''):
+            progress_monitor.feed(line)
+
+    remaining_output = proc.stdout.read()
+    proc.stdout.close()
+    return_code = proc.wait()
+    if return_code != 0:
+        LOG.error(progress_monitor.lines
+                  if progress_monitor else remaining_output)
+        raise CalledProcessError(return_code, cmd)
+
+
+def create_keyframes(filename, segments, fps, total_framecount, workdir=None,
+                     progress_callback=None):
     keyframes = []
     without_ext, _, ext = filename.rpartition('.')
     for segment in segments:
@@ -141,16 +231,11 @@ def create_keyframes(filename, segments, fps, workdir=None):
                                    suffix='-keyframes.%s' % ext,
                                    dir=workdir)
     close(fptr)
-    cmd = [
-        'ffmpeg',
-        '-loglevel', 'warning',
+    run_ffmpeg([
         '-i', '%s.%s' % (without_ext, ext),
         '-force_key_frames', args,
-        '-y',
         keyed_filename
-    ]
-    LOG.debug('Running %r', ' '.join(cmd))
-    check_call(cmd)
+    ], total_framecount, progress_callback)
     return keyed_filename
 
 
@@ -163,23 +248,15 @@ def extract_segments(input_file, segments, fps, workdir=None):
                                 suffix='-strip-%s.%s' % (start, ext),
                                 dir=workdir)
         close(fptr)
-        cmd = [
-            'ffmpeg',
-            '-loglevel', 'warning',
+        run_ffmpeg([
             '-ss',
             str(start),
-            '-i',
-            '%s.%s' % (without_ext, ext),
+            '-i', '%s.%s' % (without_ext, ext),
             '-t', str(segment.duration // fps),
-            '-vcodec',
-            'copy',
-            '-acodec',
-            'copy',
-            '-y',
+            '-vcodec', 'copy',
+            '-acodec', 'copy',
             outfile
-        ]
-        LOG.debug('Running %r', ' '.join(cmd))
-        check_call(cmd)
+        ])
         yield outfile
 
 
@@ -200,18 +277,13 @@ def join(origin_file, segments, do_cleanup=True, workdir=None):
         dir=workdir
     )
     close(fptr)
-    cmd = [
-        'ffmpeg',
-        '-loglevel', 'warning',
+    run_ffmpeg([
         '-f', 'concat',
         '-safe', '0',
         '-i', segments_file,
         '-c', 'copy',
-        '-y',
         joined_filename
-    ]
-    LOG.debug('Running %r', ' '.join(cmd))
-    check_call(cmd)
+    ])
 
     if do_cleanup:
         for filename in filenames:
@@ -258,12 +330,13 @@ def process(filename, queue, destination, workdir, do_cleanup, do_backup):
             pos, total, (pos/total)*100))
         switch_detector.total_frames = total
         pipeline.feed(frame)
-        queue.put(('detecting', filename, (pos/total) * 0.40, None))
+        # The value 0.70 has an impact to the code below. See the comments.
+        queue.put(('detecting', filename, (pos/total) * 0.70, None))
 
     inter_frame_threshold = 100
     LOG.info('Merging segments which are closer than %d frames',
              inter_frame_threshold)
-    queue.put(('merging', filename, 0.40, None))
+    queue.put(('merging', filename, 0.70, None))
     merged_segments = merge_segments(
         switch_detector.segments,
         switch_detector.position,
@@ -279,16 +352,24 @@ def process(filename, queue, destination, workdir, do_cleanup, do_backup):
             move(filename, final_destination)
     else:
         LOG.info('Extracting %d segments', len(merged_segments))
+
+        def progress_callback(value):
+            # Given the code above, we're now at 0.70. Adding 0.25 will get us
+            # to the 0.95 which is found below.
+            relative_progress = 0.25 * value
+            queue.put(('extracting', filename, 0.70 + relative_progress, None))
+
         keyed_filename = create_keyframes(
-            filename, merged_segments, fps, workdir=workdir)
-        queue.put(('extracting', filename, 0.60, None))
+            filename, merged_segments, fps, total, workdir=workdir,
+            progress_callback=progress_callback)
         segments = extract_segments(
             keyed_filename,
             merged_segments,
             fps,
             workdir=workdir
         )
-        queue.put(('joining', filename, 0.80, None))
+        # See above (extracting) how we get to 0.95
+        queue.put(('joining', filename, 0.95, None))
         joined_filename = join(
             filename,
             segments,
@@ -375,13 +456,15 @@ def print_progress(start_time, map):
             error or progress_bar(progress, length=20),
         ))
         if error:
-            LOG.exception(error)
+            LOG.exception('Error processing %r', details['filename'],
+                          exc_info=error)
 
+    overall_progress = mean(all_progress)
     current_time = datetime.now()
     elapsed_time = current_time - start_time
-    overall_progress = mean(all_progress)
     percent_per_second = overall_progress / elapsed_time.total_seconds()
-    estimated_time = timedelta(seconds=100.0/percent_per_second)
+    estimated_total_time = timedelta(seconds=1/percent_per_second)
+    remaining_time = estimated_total_time - elapsed_time
 
     print(80*'-')
     print('pending/done/total: %d/%d/%s' % (pending_count, done_count, len(map)))
@@ -390,10 +473,12 @@ def print_progress(start_time, map):
     print('New size:   %9s' % sizeof_fmt(total_new_size))
     print('Saved size: %9s' % sizeof_fmt(saved_size))
     print(80*'-')
-    print('Overall: %s %3.2f %s' % (
+    print('Elapsed time  : %s ' % elapsed_time)
+    print('Remaining time: %s ' % remaining_time)
+    print(80*'-')
+    print('Overall: %s %3.2f%%' % (
         progress_bar(overall_progress),
         overall_progress * 100,
-        estimated_time,
     ))
     print(80*'-')
 
@@ -428,10 +513,11 @@ def main():
     supported_files = {fn for fn in unglobbed if fn[-3:] in SUPPORTED_EXTS}
 
     queue = Queue()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_filename = {}
         progress_map = {
             filename: {
+                'filename': filename,
                 'state': 'pending',
                 'progress': 0.0,
                 'old_size': getsize(filename)
