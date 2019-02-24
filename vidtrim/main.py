@@ -8,7 +8,7 @@ from enum import Enum
 from glob import glob
 from logging import FileHandler, Formatter, StreamHandler
 from logging.handlers import RotatingFileHandler
-from math import floor
+from math import floor, inf
 from os import close, unlink
 from os.path import basename, exists, getsize
 from os.path import join as pjoin
@@ -463,7 +463,10 @@ def print_progress(start_time, map):
     current_time = datetime.now()
     elapsed_time = current_time - start_time
     percent_per_second = overall_progress / elapsed_time.total_seconds()
-    estimated_total_time = timedelta(seconds=1/percent_per_second)
+    if percent_per_second > 0:
+        estimated_total_time = timedelta(seconds=1/percent_per_second)
+    else:
+        estimated_total_time = inf
     remaining_time = estimated_total_time - elapsed_time
 
     print(80*'-')
