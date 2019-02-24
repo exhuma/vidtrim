@@ -386,6 +386,7 @@ def process(filename, queue, destination, workdir, do_cleanup, do_backup):
             move(filename, backup_filename)
             original_file = backup_filename
         move(joined_filename, filename)
+        LOG.info('Copying file metadata from %r to %r', original_file, filename)
         copystat(original_file, filename)
         if destination:
             final_destination = pjoin(destination, file_basename)
